@@ -7,8 +7,10 @@ on:
   workflow_dispatch:  # Allows manual trigger from GitHub UI
 
 jobs:
+  
   deploy:
-    runs-on: ubuntu-latest    
+    runs-on: ubuntu-latest
+  environment: Akhilesh-pi  
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
