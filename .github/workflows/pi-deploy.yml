@@ -4,8 +4,7 @@ on:
   push:
     branches:
       - main  
-  workflow_dispatch:  # Allows manual trigger from GitHub UI
-
+  workflow_dispatch:  
 jobs:
   deploy:
     environment: Akhilesh-pi  
@@ -22,19 +21,20 @@ jobs:
           key: ${{ secrets.PI_SSH_KEY }}
           port: ${{ secrets.PI_PORT }}
           script: |
-            cd ~/apps/Lex-BAR
+            mkdir -p ~/workspace/Lex-BAR
+            cd ~/workspace/Lex-BAR
             touch test-1.py
 
-      - name: Verify Deployment
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.PI_HOST }}
-          username: ${{ secrets.PI_USERNAME }}
-          key: ${{ secrets.PI_SSH_KEY }}
-          port: ${{ secrets.PI_PORT }}
-          script: |
-            # Check if service is running
-            sudo systemctl status your-app-name.service --no-pager
+      # - name: Verify Deployment
+      #   uses: appleboy/ssh-action@v1.0.0
+      #   with:
+      #     host: ${{ secrets.PI_HOST }}
+      #     username: ${{ secrets.PI_USERNAME }}
+      #     key: ${{ secrets.PI_SSH_KEY }}
+      #     port: ${{ secrets.PI_PORT }}
+      #     script: |
+      #       # Check if service is running
+      #       sudo systemctl status your-app-name.service --no-pager
             
-            # Or check application health endpoint
-            # curl -f http://localhost:8000/health || exit 1
+      #       # Or check application health endpoint
+      #       # curl -f http://localhost:8000/health || exit 1
