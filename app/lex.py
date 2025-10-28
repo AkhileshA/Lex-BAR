@@ -149,7 +149,7 @@ async def leaderboard(interaction: discord.Interaction):
     if not data:
         await interaction.followup.send("No players registered yet! Use `/register` to register your Beyond All Reason username.")
         return
-
+    print("Making leaderboard")
     leaderboard: List[Dict[str, Any]] = []
     # fetch stats sequentially to avoid hammering the API; consider concurrency with throttling if desired
     for discord_id, info in data.items():
@@ -171,18 +171,24 @@ async def leaderboard(interaction: discord.Interaction):
             })
 
     leaderboard.sort(key=lambda x: x["skill"], reverse=True)
-
+    print(leaderboard)
     embed = discord.Embed(color=0x0099FF, title="🏆 Beyond All Reason Server Leaderboard",
                           description="Large Team rankings - Top players from this Discord server",
                           timestamp=discord.utils.utcnow())
 
     if leaderboard:
-        lines = []
-        for idx, p in enumerate(leaderboard):
-            medal = "🥇" if idx == 0 else "🥈" if idx == 1 else "🥉" if idx == 2 else f"{idx+1}."
-            skill_text = f"{p['skill']:.2f}" if p["skill"] > 0 else "Unranked"
-            lines.append(f"{medal} **{p['barUsername']}** - Skill: {skill_text}")
-        embed.add_field(name="Rankings", value="\n".join(lines), inline=False)
+        # Split rankings into chunks of 15 players each
+        chunk_size = 15
+        for chunk_idx in range(0, len(leaderboard), chunk_size):
+            chunk = leaderboard[chunk_idx:chunk_idx + chunk_size]
+            lines = []
+            for idx, p in enumerate(chunk, start=chunk_idx):
+                medal = "🥇" if idx == 0 else "🥈" if idx == 1 else "🥉" if idx == 2 else f"{idx+1}."
+                skill_text = f"{p['skill']:.2f}" if p["skill"] > 0 else "Unranked"
+                lines.append(f"{medal} **{p['barUsername']}** - Skill: {skill_text}")
+            
+            field_name = "Rankings" if chunk_idx == 0 else f"Rankings (cont. {chunk_idx + 1}-{chunk_idx + len(chunk)})"
+            embed.add_field(name=field_name, value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="Rankings", value="No player data available.", inline=False)
 
