@@ -6,6 +6,8 @@ from typing import Optional, Dict, Any, List
 import aiohttp
 import discord
 from discord import app_commands
+import dotenv
+dotenv.load_dotenv()
 
 PLAYER_DATA_FILE = "players.json"
 API_BASE = "https://gex.honu.pw/api/user/search/"
