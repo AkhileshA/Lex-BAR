@@ -182,7 +182,7 @@ def create_leaderboard_embed(leaderboard_list: List[Dict[str, Any]],
         highlight_username: Optional username to highlight with a star
     """
     if description is None:
-        description = f"Large Team rankings - Top players from this Discord server\n*Stats update every {STATS_UPDATE_INTERVAL // 60} minutes*"
+        description = "Large Team rankings - Top players from this Discord server\n*Use `/refresh` to update stats manually*"
     
     embed = discord.Embed(
         color=0x0099FF, 
@@ -504,9 +504,11 @@ async def on_ready():
     except Exception as e:
         print("Failed to sync commands:", e)
     
-    # Start the background task to update player stats
-    bot.loop.create_task(update_all_player_stats())
-    print(f"Background stats update task started (runs every {STATS_UPDATE_INTERVAL // 60} minutes)")
+    # Auto-refresh disabled - use /refresh command for manual updates
+    # Uncomment the lines below to enable automatic background updates
+    # bot.loop.create_task(update_all_player_stats())
+    # print(f"Background stats update task started (runs every {STATS_UPDATE_INTERVAL // 60} minutes)")
+    print("Automatic stats updates disabled. Use /refresh command to update player stats manually.")
 
 
 if __name__ == "__main__":
