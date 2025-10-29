@@ -3,7 +3,8 @@ name: Deploy to Raspberry Pi
 on:
   push:
     branches:
-      - main  
+      - main
+      - feature/python-test
   workflow_dispatch:  
 jobs:
   deploy:
