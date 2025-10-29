@@ -17,7 +17,7 @@ API_BASE = "https://gex.honu.pw/api/user/search/"
 
 # Configuration
 STATS_UPDATE_INTERVAL = int(os.environ.get("STATS_UPDATE_INTERVAL_MINUTES", "30")) * 60  # Convert minutes to seconds
-MAX_CONCURRENT_FETCHES = 4  # Maximum number of parallel API requests
+MAX_CONCURRENT_FETCHES = 1  # Maximum number of parallel API requests
 
 # Semaphore to limit concurrent API requests
 api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
