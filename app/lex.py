@@ -1,16 +1,29 @@
 import os
-import json
 import asyncio
 from typing import Optional, Dict, Any, List
+from datetime import datetime
 
 import aiohttp
 import discord
 from discord import app_commands
 import dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from models import Base, Player
+
 dotenv.load_dotenv()
 
-PLAYER_DATA_FILE = "players.json"
 API_BASE = "https://gex.honu.pw/api/user/search/"
+
+# Database setup
+DATABASE_URL = os.environ.get("SUPABASE_CONN_STR")
+if not DATABASE_URL:
+    print("ERROR: SUPABASE_CONN_STR environment variable is not set!")
+    raise SystemExit(1)
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+Base.metadata.create_all(engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -20,16 +33,51 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 
-def load_player_data() -> Dict[str, Any]:
-    if os.path.exists(PLAYER_DATA_FILE):
-        with open(PLAYER_DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+def get_db() -> Session:
+    """Create a new database session"""
+    return SessionLocal()
 
 
-def save_player_data(data: Dict[str, Any]) -> None:
-    with open(PLAYER_DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+def get_all_players(db: Session) -> Dict[str, Dict[str, Any]]:
+    """Get all players from database, returns dict keyed by discord_id"""
+    players = db.query(Player).all()
+    result = {}
+    for player in players:
+        result[str(player.discordId)] = {
+            "discordId": player.discordId,
+            "discordUsername": player.discordUsername,
+            "barUsername": player.barUsername,
+            "registeredAt": player.registeredAt.isoformat() if player.registeredAt else None,
+            "registeredBy": player.registeredBy
+        }
+    return result
+
+
+def save_or_update_player(db: Session, discord_id: int, discord_username: str,
+                          bar_username: str, registered_by: Optional[int] = None) -> None:
+    """Save or update a player in the database"""
+    player = db.query(Player).filter(Player.discordId == discord_id).first()
+
+    if player:
+        # Update existing player
+        player.discordUsername = discord_username
+        player.barUsername = bar_username
+        player.registeredAt = datetime.utcnow()
+        if registered_by is not None:
+            player.registeredBy = registered_by
+    else:
+        # Create new player
+        player = Player(
+            discordId=discord_id,
+            discordUsername=discord_username,
+            barUsername=bar_username,
+            registeredAt=datetime.utcnow(),
+            registeredBy=registered_by
+        )
+        db.add(player)
+
+    db.commit()
+    db.refresh(player)
 
 
 async def fetch_player_stats(username: str) -> Dict[str, Any]:
@@ -77,14 +125,18 @@ async def register(interaction: discord.Interaction, username: str):
         return
 
     player = result.get("player")
-    data = load_player_data()
-    data[str(interaction.user.id)] = {
-        "discordId": interaction.user.id,
-        "discordUsername": interaction.user.name,
-        "barUsername": username,
-        "registeredAt": discord.utils.utcnow().isoformat()
-    }
-    save_player_data(data)
+
+    # Save to database
+    db = get_db()
+    try:
+        save_or_update_player(
+            db,
+            discord_id=interaction.user.id,
+            discord_username=interaction.user.name,
+            bar_username=username
+        )
+    finally:
+        db.close()
 
     embed = discord.Embed(color=0x00FF00, title="Registration Successful!", timestamp=discord.utils.utcnow())
 
@@ -118,15 +170,18 @@ async def registeruser(interaction: discord.Interaction, user: discord.User, use
         await interaction.followup.send(f'Could not find player "{username}" in the Beyond All Reason database. Please check the spelling and try again.', ephemeral=True)
         return
 
-    data = load_player_data()
-    data[str(user.id)] = {
-        "discordId": user.id,
-        "discordUsername": user.name,
-        "barUsername": username,
-        "registeredAt": discord.utils.utcnow().isoformat(),
-        "registeredBy": interaction.user.id
-    }
-    save_player_data(data)
+    # Save to database
+    db = get_db()
+    try:
+        save_or_update_player(
+            db,
+            discord_id=user.id,
+            discord_username=user.name,
+            bar_username=username,
+            registered_by=interaction.user.id
+        )
+    finally:
+        db.close()
 
     player = result["player"]
     embed = discord.Embed(color=0x00FF00, title="✅ Registration Successful!", timestamp=discord.utils.utcnow())
@@ -145,10 +200,18 @@ async def registeruser(interaction: discord.Interaction, user: discord.User, use
 @tree.command(name="leaderboard", description="Display the server leaderboard for Beyond All Reason")
 async def leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
-    data = load_player_data()
+
+    # Get all players from database
+    db = get_db()
+    try:
+        data = get_all_players(db)
+    finally:
+        db.close()
+
     if not data:
         await interaction.followup.send("No players registered yet! Use `/register` to register your Beyond All Reason username.")
         return
+
     print("Making leaderboard")
     leaderboard: List[Dict[str, Any]] = []
     # fetch stats sequentially to avoid hammering the API; consider concurrency with throttling if desired
@@ -186,7 +249,7 @@ async def leaderboard(interaction: discord.Interaction):
                 medal = "🥇" if idx == 0 else "🥈" if idx == 1 else "🥉" if idx == 2 else f"{idx+1}."
                 skill_text = f"{p['skill']:.2f}" if p["skill"] > 0 else "Unranked"
                 lines.append(f"{medal} **{p['barUsername']}** - Skill: {skill_text}")
-            
+
             field_name = "Rankings" if chunk_idx == 0 else f"Rankings (cont. {chunk_idx + 1}-{chunk_idx + len(chunk)})"
             embed.add_field(name=field_name, value="\n".join(lines), inline=False)
     else:
