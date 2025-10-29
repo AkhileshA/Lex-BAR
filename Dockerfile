@@ -12,4 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app/ .
 
-CMD ["python", "lex.py"]
+# Set environment variable to disable Python output buffering
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-u", "lex.py"]
