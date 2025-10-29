@@ -27,38 +27,46 @@ jobs:
 
       - name: Build and Deploy Docker Container
         uses: appleboy/ssh-action@v1.0.0
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          SUPABASE_CONN_STR: ${{ secrets.SUPABASE_CONN_STR }}          
         with:
           host: ${{ secrets.PI_HOST }}
           username: ${{ secrets.PI_USERNAME }}
           key: ${{ secrets.PI_SSH_KEY }}
           port: ${{ secrets.PI_PORT }}
+          envs: DISCORD_TOKEN,SUPABASE_CONN_STR
           script: |
             cd ~/workspace/Lex-BAR
-            
+
             # Stop and remove existing container if it exists
             if docker ps -a --format 'table {{.Names}}' | grep -q '^lex-bar$'; then
               echo "Stopping existing lex-bar container..."
               docker stop lex-bar || true
               docker rm lex-bar || true
             fi
-            
+
             # Remove old image if it exists
             if docker images --format 'table {{.Repository}}:{{.Tag}}' | grep -q '^lex-bar:latest$'; then
               echo "Removing old lex-bar image..."
               docker rmi lex-bar:latest || true
             fi
-            
+
             # Build new Docker image
             echo "Building Docker image..."
             docker build -t lex-bar:latest .
-            
-            # Run new container
+
+            # Run new container with environment variables
             echo "Starting new container..."
-            docker run -d --name lex-bar --restart unless-stopped lex-bar:latest
-            
+            docker run -d --name lex-bar --restart unless-stopped \
+              -e DISCORD_TOKEN="${DISCORD_TOKEN}" \
+              -e SUPABASE_CONN_STR="${SUPABASE_CONN_STR}" \
+              -e DOCKER_TOKEN="${DOCKER_TOKEN}" \
+              lex-bar:latest
+
             # Wait a moment for container to start
             sleep 5
-            
+
             # Show container status
             docker ps --filter name=lex-bar
 
