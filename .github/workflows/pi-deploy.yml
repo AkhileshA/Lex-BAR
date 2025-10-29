@@ -58,10 +58,7 @@ jobs:
 
             # Run new container with environment variables
             echo "Starting new container..."
-            docker run -d --name lex-bar --restart unless-stopped \
-              -e DISCORD_TOKEN="${DISCORD_TOKEN}" \
-              -e SUPABASE_CONN_STR="${SUPABASE_CONN_STR}" \              
-              lex-bar:latest
+            docker run -d --name lex-bar --restart unless-stopped -e DISCORD_TOKEN="${DISCORD_TOKEN}" -e SUPABASE_CONN_STR="${SUPABASE_CONN_STR}" lex-bar:latest
 
             # Wait a moment for container to start
             sleep 5
