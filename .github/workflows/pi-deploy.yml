@@ -13,7 +13,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Deploy to Raspberry Pi
+      - name: Copy code to Raspberry Pi
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.PI_HOST }}
+          username: ${{ secrets.PI_USERNAME }}
+          key: ${{ secrets.PI_SSH_KEY }}
+          port: ${{ secrets.PI_PORT }}
+          source: "."
+          target: "~/workspace/Lex-BAR"
+          rm: true
+
+      - name: Build and Deploy Docker Container
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.PI_HOST }}
@@ -21,20 +32,52 @@ jobs:
           key: ${{ secrets.PI_SSH_KEY }}
           port: ${{ secrets.PI_PORT }}
           script: |
-            mkdir -p ~/workspace/Lex-BAR
             cd ~/workspace/Lex-BAR
-            touch test-1.py
-
-      # - name: Verify Deployment
-      #   uses: appleboy/ssh-action@v1.0.0
-      #   with:
-      #     host: ${{ secrets.PI_HOST }}
-      #     username: ${{ secrets.PI_USERNAME }}
-      #     key: ${{ secrets.PI_SSH_KEY }}
-      #     port: ${{ secrets.PI_PORT }}
-      #     script: |
-      #       # Check if service is running
-      #       sudo systemctl status your-app-name.service --no-pager
             
-      #       # Or check application health endpoint
-      #       # curl -f http://localhost:8000/health || exit 1
+            # Stop and remove existing container if it exists
+            if docker ps -a --format 'table {{.Names}}' | grep -q '^lex-bar$'; then
+              echo "Stopping existing lex-bar container..."
+              docker stop lex-bar || true
+              docker rm lex-bar || true
+            fi
+            
+            # Remove old image if it exists
+            if docker images --format 'table {{.Repository}}:{{.Tag}}' | grep -q '^lex-bar:latest$'; then
+              echo "Removing old lex-bar image..."
+              docker rmi lex-bar:latest || true
+            fi
+            
+            # Build new Docker image
+            echo "Building Docker image..."
+            docker build -t lex-bar:latest .
+            
+            # Run new container
+            echo "Starting new container..."
+            docker run -d \
+              --name lex-bar \
+              --restart unless-stopped \              
+              lex-bar:latest
+            
+            # Wait a moment for container to start
+            sleep 5
+            
+            # Show container status
+            docker ps --filter name=lex-bar
+
+      - name: Verify Deployment
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PI_HOST }}
+          username: ${{ secrets.PI_USERNAME }}
+          key: ${{ secrets.PI_SSH_KEY }}
+          port: ${{ secrets.PI_PORT }}
+          script: |
+            # Check if container is running
+            if docker ps --filter name=lex-bar --format 'table {{.Names}}' | grep -q '^lex-bar$'; then
+              echo "✅ Container is running successfully"
+              docker logs --tail 20 lex-bar
+            else
+              echo "❌ Container failed to start"
+              docker logs lex-bar
+              exit 1
+            fi
