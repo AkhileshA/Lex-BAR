@@ -54,10 +54,7 @@ jobs:
             
             # Run new container
             echo "Starting new container..."
-            docker run -d \
-              --name lex-bar \
-              --restart unless-stopped \              
-              lex-bar:latest
+            docker run -d --name lex-bar --restart unless-stopped lex-bar:latest
             
             # Wait a moment for container to start
             sleep 5
