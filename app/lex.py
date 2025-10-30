@@ -447,6 +447,7 @@ async def updateuser(interaction: discord.Interaction, username: str):
             
             print(f"[Update complete] {player.barUsername}: skill={player.skill}")
         else:
+            print(f"Failed to fetch stats for {username}, response: {result}")
             await interaction.followup.send(f"❌ Failed to fetch stats for '{username}'. Please try again later.")
             return
         
