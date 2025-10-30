@@ -16,7 +16,7 @@ dotenv.load_dotenv()
 API_BASE = "https://gex.honu.pw/api/user/search/"
 
 # Configuration
-STATS_UPDATE_INTERVAL = int(os.environ.get("STATS_UPDATE_INTERVAL_MINUTES", "30")) * 60  # Convert minutes to seconds
+STATS_UPDATE_INTERVAL = int(os.environ.get("STATS_UPDATE_INTERVAL_MINUTES", "300")) * 60  # Convert minutes to seconds
 MAX_CONCURRENT_FETCHES = 1  # Maximum number of parallel API requests
 
 # Semaphore to limit concurrent API requests
@@ -136,7 +136,10 @@ async def update_single_player_stats(player_data: Dict[str, Any]) -> Optional[Di
     """Fetch stats for a single player with semaphore to limit concurrency"""
     async with api_semaphore:  # Limit concurrent requests
         try:
+            print(f"Updating stats for {player_data['barUsername']}...")
             result = await fetch_player_stats(player_data["barUsername"])
+            
+            await asyncio.sleep(5)
             if result.get("success") and result.get("player"):
                 p = result["player"]
                 return {
@@ -148,7 +151,7 @@ async def update_single_player_stats(player_data: Dict[str, Any]) -> Optional[Di
                 }
             else:
                 print(f"Failed to fetch stats for {player_data['barUsername']}, response: {result}")
-                return None
+                return None            
         except Exception as e:
             print(f"Error updating {player_data['barUsername']}: {e}")
             return None
@@ -507,8 +510,8 @@ async def on_ready():
     
     # Auto-refresh disabled - use /refresh command for manual updates
     # Uncomment the lines below to enable automatic background updates
-    # bot.loop.create_task(update_all_player_stats())
-    # print(f"Background stats update task started (runs every {STATS_UPDATE_INTERVAL // 60} minutes)")
+    bot.loop.create_task(update_all_player_stats())
+    print(f"Background stats update task started (runs every {STATS_UPDATE_INTERVAL // 60} minutes)")
     print("Automatic stats updates disabled. Use /refresh command to update player stats manually.")
 
 
