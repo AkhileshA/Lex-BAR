@@ -100,10 +100,13 @@ def save_or_update_player(db: Session, discord_id: int, discord_username: str,
 
 async def fetch_player_stats(username: str) -> Dict[str, Any]:
     url = f"{API_BASE}{aiohttp.helpers.quote(username)}?includeSkill=true&searchPreviousNames=true"
+    headers = {
+        'User-Agent': 'Lex-BAR Discord Bot aluvala.akhilesh@gmail.com http://github.com/AkhileshA'
+    }
     timeout = aiohttp.ClientTimeout(total=15)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
-            async with session.get(url) as resp:
+            async with session.get(url, headers=headers) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
         except Exception as e:
