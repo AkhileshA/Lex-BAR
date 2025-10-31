@@ -142,7 +142,7 @@ async def update_single_player_stats(player_data: Dict[str, Any]) -> Optional[Di
             print(f"Updating stats for {player_data['barUsername']}...")
             result = await fetch_player_stats(player_data["barUsername"])
             
-            await asyncio.sleep(5)
+            # await asyncio.sleep(5)
             if result.get("success") and result.get("player"):
                 p = result["player"]
                 return {
@@ -188,8 +188,8 @@ def create_leaderboard_embed(leaderboard_list: List[Dict[str, Any]],
         highlight_username: Optional username to highlight with a star
     """
     if description is None:
-        description = "Large Team rankings - Top players from this Discord server\n*Use `/refresh` to update stats manually*"
-    
+        description = "Large Team rankings - Top players from this Discord server\n*Use `/refresh` to update stats manually for all users*"
+        description += "\n*Use `/updateuser` `<username>` to update a specific user's stats*\n"
     embed = discord.Embed(
         color=0x0099FF, 
         title="🏆 Beyond All Reason Server Leaderboard",
@@ -371,7 +371,7 @@ async def refresh(interaction: discord.Interaction):
             return
         
         await interaction.followup.send(f"🔄 Refreshing stats for {len(players)} players... This may take a moment.", ephemeral=True)
-        
+        db.close()
         print(f"[Manual refresh by {interaction.user.name}] Updating stats for {len(players)} players in parallel...")
         
         # Prepare player data for parallel fetching
@@ -388,6 +388,7 @@ async def refresh(interaction: discord.Interaction):
         results = await asyncio.gather(*update_tasks, return_exceptions=True)
         
         # Update database with results
+        db = get_db()
         updated_count = 0
         for result in results:
             if isinstance(result, dict) and result and result.get("success"):
@@ -396,17 +397,18 @@ async def refresh(interaction: discord.Interaction):
                     player.skill = result["skill"]
                     player.skillUncertainty = result["skillUncertainty"]
                     player.lastStatsUpdate = datetime.utcnow()
+                    db.add(player)
                     updated_count += 1
         
         db.commit()
         print(f"[Manual refresh complete] {updated_count}/{len(players)} players updated")
-        
+
         # Send a follow-up message with results
-        await interaction.channel.send(f"✅ Stats refresh complete! Updated {updated_count}/{len(players)} players. Use `/leaderboard` to see the latest rankings.")
-        
+        await interaction.followup.send(f"✅ Stats refresh complete! Updated {updated_count}/{len(players)} players. Use `/leaderboard` to see the latest rankings.", ephemeral=True)
+
     except Exception as e:
         print(f"Error during manual refresh: {e}")
-        await interaction.channel.send(f"❌ An error occurred during the refresh: {str(e)}")
+        await interaction.followup.send(f"❌ An error occurred during the refresh: {str(e)}", ephemeral=True)
     finally:
         db.close()
 
@@ -513,7 +515,7 @@ async def on_ready():
     
     # Auto-refresh disabled - use /refresh command for manual updates
     # Uncomment the lines below to enable automatic background updates
-    bot.loop.create_task(update_all_player_stats())
+    # bot.loop.create_task(update_all_player_stats())
     print(f"Background stats update task started (runs every {STATS_UPDATE_INTERVAL // 60} minutes)")
     print("Automatic stats updates disabled. Use /refresh command to update player stats manually.")
 
