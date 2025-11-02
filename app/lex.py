@@ -1,3 +1,4 @@
+from functools import lru_cache
 import os
 import asyncio
 from typing import Optional, Dict, Any, List
@@ -39,6 +40,10 @@ intents.messages = True
 
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
+
+# Cache for scheduled tasks to avoid database queries every minute
+schedule_cache: Dict[str, List[SchedulerConfig]] = {}  # Key format: "HH:MM"
+schedule_cache_last_reload = None
 
 
 def get_db() -> Session:
@@ -575,15 +580,17 @@ async def leaderboard(interaction: discord.Interaction):
     hour="Hour in UTC (0-23)",
     minute="Minute (0-59)"
 )
-async def schedule_leaderboard(interaction: discord.Interaction, channel: discord.TextChannel, hour: int, minute: int):
+async def schedule_leaderboard(
+    interaction: discord.Interaction,
+    channel: discord.abc.GuildChannel,
+    hour: app_commands.Range[int, 0, 23],
+    minute: app_commands.Range[int, 0, 59]
+):
     await interaction.response.defer(ephemeral=True)
 
-    # Validate inputs
-    if not (0 <= hour <= 23):
-        await interaction.followup.send("Hour must be between 0 and 23 (UTC)", ephemeral=True)
-        return
-    if not (0 <= minute <= 59):
-        await interaction.followup.send("Minute must be between 0 and 59", ephemeral=True)
+    # Ensure it's a text channel
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.followup.send("Please select a text channel.", ephemeral=True)
         return
 
     db = get_db()
@@ -608,6 +615,9 @@ async def schedule_leaderboard(interaction: discord.Interaction, channel: discor
         embed.set_footer(text="The bot will automatically refresh stats and post the leaderboard at the scheduled time.")
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Reload the schedule cache to pick up the new schedule
+        reload_schedule_cache()
 
         # Restart the scheduled task with new config
         if not scheduled_leaderboard.is_running():
@@ -637,6 +647,9 @@ async def disable_schedule(interaction: discord.Interaction):
             timestamp=discord.utils.utcnow()
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Reload the schedule cache to remove the disabled schedule
+        reload_schedule_cache()
 
     finally:
         db.close()
@@ -679,21 +692,21 @@ async def schedule_status(interaction: discord.Interaction):
 
 @tasks.loop(minutes=1)
 async def scheduled_leaderboard():
-    """Background task that checks if it's time to post the leaderboard"""
+    """Background task that checks if it's time to post the leaderboard (uses cache, no DB query if no schedules)"""
     try:
         now = datetime.utcnow()
         current_hour = now.hour
         current_minute = now.minute
 
+        # Get schedules from cache (no DB query unless there's a match)
+        configs = get_schedules_from_cache(current_hour, current_minute)
+
+        # Only proceed if there are schedules for this minute
+        if not configs:
+            return  # No DB query needed!
+
         db = get_db()
         try:
-            # Get all enabled scheduler configs
-            configs = db.query(SchedulerConfig).filter(
-                SchedulerConfig.enabled == True,
-                SchedulerConfig.schedule_hour == current_hour,
-                SchedulerConfig.schedule_minute == current_minute
-            ).all()
-
             for config in configs:
                 try:
                     channel = bot.get_channel(config.channel_id)
@@ -737,10 +750,46 @@ async def scheduled_leaderboard():
     except Exception as e:
         print(f"Error in scheduled_leaderboard task: {e}")
 
+def reload_schedule_cache():
+    """Reload all schedules from database into memory cache"""
+    global schedule_cache, schedule_cache_last_reload
+
+    db = get_db()
+    try:
+        # Clear existing cache
+        schedule_cache.clear()
+
+        # Load all enabled schedules
+        configs = db.query(SchedulerConfig).filter(SchedulerConfig.enabled == True).all()
+
+        # Group by time slot
+        for config in configs:
+            if config.schedule_hour is not None and config.schedule_minute is not None:
+                time_key = f"{config.schedule_hour:02d}:{config.schedule_minute:02d}"
+                if time_key not in schedule_cache:
+                    schedule_cache[time_key] = []
+                schedule_cache[time_key].append(config)
+
+        schedule_cache_last_reload = datetime.utcnow()
+        print(f"Schedule cache reloaded: {len(schedule_cache)} time slots with {sum(len(v) for v in schedule_cache.values())} total schedules")
+
+    finally:
+        db.close()
+
+
+def get_schedules_from_cache(current_hour: int, current_minute: int) -> List[SchedulerConfig]:
+    """Get schedules for the current time from cache (no DB query)"""
+    time_key = f"{current_hour:02d}:{current_minute:02d}"
+    return schedule_cache.get(time_key, [])
+
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+    # Load all schedules into cache on startup
+    reload_schedule_cache()
+
     try:
         # For instant testing, sync to a specific guild (uncomment and add your server ID)
         # guild_id = os.environ.get("DISCORD_GUILD_ID")  # Add your server ID to .env
@@ -759,7 +808,7 @@ async def on_ready():
     # Start the scheduled leaderboard task
     if not scheduled_leaderboard.is_running():
         scheduled_leaderboard.start()
-        print("Scheduled leaderboard task started (checks every minute)")
+        print("Scheduled leaderboard task started (checks every minute, uses in-memory cache)")
 
     print("Automatic stats updates disabled. Use /refresh command to update player stats manually.")
 
