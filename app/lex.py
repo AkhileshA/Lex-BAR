@@ -576,21 +576,47 @@ async def leaderboard(interaction: discord.Interaction):
 
 @tree.command(name="scheduleleaderboard", description="Schedule automatic leaderboard posting")
 @app_commands.describe(
-    channel="The channel where leaderboard will be posted",
+    channel="The channel where leaderboard will be posted (use # to select)",
     hour="Hour in UTC (0-23)",
     minute="Minute (0-59)"
 )
 async def schedule_leaderboard(
     interaction: discord.Interaction,
-    channel: discord.abc.GuildChannel,
+    channel: str,
     hour: app_commands.Range[int, 0, 23],
     minute: app_commands.Range[int, 0, 59]
 ):
     await interaction.response.defer(ephemeral=True)
 
+    # Parse channel mention or ID
+    channel_obj = None
+
+    # Try to extract channel ID from mention format <#123456789>
+    if channel.startswith('<#') and channel.endswith('>'):
+        channel_id = int(channel[2:-1])
+        channel_obj = interaction.guild.get_channel(channel_id)
+    # Try to parse as raw ID
+    elif channel.isdigit():
+        channel_obj = interaction.guild.get_channel(int(channel))
+    # Try to find by name
+    else:
+        # Remove emoji and special characters for matching
+        clean_name = channel.strip('#').strip()
+        for ch in interaction.guild.channels:
+            if isinstance(ch, discord.TextChannel) and ch.name == clean_name:
+                channel_obj = ch
+                break
+
+    if not channel_obj:
+        await interaction.followup.send(
+            "❌ Channel not found. Please mention the channel using # (e.g., #leaderboard) or provide a valid channel ID.",
+            ephemeral=True
+        )
+        return
+
     # Ensure it's a text channel
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.followup.send("Please select a text channel.", ephemeral=True)
+    if not isinstance(channel_obj, discord.TextChannel):
+        await interaction.followup.send("Please select a text channel (not voice/stage/forum).", ephemeral=True)
         return
 
     db = get_db()
@@ -598,7 +624,7 @@ async def schedule_leaderboard(
         config = save_scheduler_config(
             db,
             guild_id=interaction.guild_id,
-            channel_id=channel.id,
+            channel_id=channel_obj.id,
             schedule_hour=hour,
             schedule_minute=minute,
             enabled=True
@@ -609,7 +635,7 @@ async def schedule_leaderboard(
             title="✅ Leaderboard Schedule Configured",
             timestamp=discord.utils.utcnow()
         )
-        embed.add_field(name="Channel", value=channel.mention, inline=True)
+        embed.add_field(name="Channel", value=channel_obj.mention, inline=True)
         embed.add_field(name="Time (UTC)", value=f"{hour:02d}:{minute:02d}", inline=True)
         embed.add_field(name="Status", value="Enabled", inline=True)
         embed.set_footer(text="The bot will automatically refresh stats and post the leaderboard at the scheduled time.")
