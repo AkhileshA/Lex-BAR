@@ -1,15 +1,16 @@
 import os
 import asyncio
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 import aiohttp
 import discord
 from discord import app_commands
+from discord.ext import tasks
 import dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from models import Base, Player
+from models import Base, Player, SchedulerConfig
 
 dotenv.load_dotenv()
 
@@ -96,6 +97,99 @@ def save_or_update_player(db: Session, discord_id: int, discord_username: str,
 
     db.commit()
     db.refresh(player)
+
+
+def get_scheduler_config(db: Session, guild_id: int) -> Optional[SchedulerConfig]:
+    """Get scheduler configuration for a guild"""
+    return db.query(SchedulerConfig).filter(SchedulerConfig.guild_id == guild_id).first()
+
+
+def save_scheduler_config(db: Session, guild_id: int, channel_id: Optional[int] = None,
+                         schedule_hour: Optional[int] = None, schedule_minute: Optional[int] = None,
+                         enabled: Optional[bool] = None) -> SchedulerConfig:
+    """Save or update scheduler configuration"""
+    config = db.query(SchedulerConfig).filter(SchedulerConfig.guild_id == guild_id).first()
+
+    if config:
+        # Update existing config
+        if channel_id is not None:
+            config.channel_id = channel_id
+        if schedule_hour is not None:
+            config.schedule_hour = schedule_hour
+        if schedule_minute is not None:
+            config.schedule_minute = schedule_minute
+        if enabled is not None:
+            config.enabled = enabled
+    else:
+        # Create new config
+        config = SchedulerConfig(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            schedule_hour=schedule_hour,
+            schedule_minute=schedule_minute,
+            enabled=enabled if enabled is not None else False
+        )
+        db.add(config)
+
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+async def refresh_all_player_stats() -> Dict[str, Any]:
+    """Refresh stats for all players in parallel and return summary"""
+    db = get_db()
+    try:
+        players = db.query(Player).all()
+        total = len(players)
+
+        if total == 0:
+            return {"total": 0, "updated": 0, "failed": 0}
+
+        print(f"Refreshing stats for {total} players in parallel...")
+
+        # Prepare player data for parallel fetching
+        player_data_list = [
+            {
+                "discordId": p.discordId,
+                "barUsername": p.barUsername
+            }
+            for p in players
+        ]
+
+        # Close the DB connection before async operations
+        db.close()
+
+        # Fetch all player stats in parallel
+        update_tasks = [update_single_player_stats(pd) for pd in player_data_list]
+        results = await asyncio.gather(*update_tasks, return_exceptions=True)
+
+        # Reopen DB connection and update with results
+        db = get_db()
+        updated_count = 0
+        failed_count = 0
+
+        for result in results:
+            if isinstance(result, dict) and result and result.get("success"):
+                player = db.query(Player).filter(Player.discordId == result["discordId"]).first()
+                if player:
+                    player.skill = result["skill"]
+                    player.skillUncertainty = result["skillUncertainty"]
+                    player.lastStatsUpdate = datetime.utcnow()
+                    db.add(player)
+                    updated_count += 1
+            else:
+                failed_count += 1
+
+        db.commit()
+        print(f"Stats refresh complete: {updated_count}/{total} players updated, {failed_count} failed")
+
+        return {"total": total, "updated": updated_count, "failed": failed_count}
+    except Exception as e:
+        print(f"Error in refresh_all_player_stats: {e}")
+        return {"total": 0, "updated": 0, "failed": 0, "error": str(e)}
+    finally:
+        db.close()
 
 
 async def fetch_player_stats(username: str) -> Dict[str, Any]:
@@ -361,56 +455,36 @@ async def registeruser(interaction: discord.Interaction, user: discord.User, use
 @tree.command(name="refresh", description="Force an immediate update of all player stats")
 async def refresh(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    
+
     db = get_db()
     try:
         players = db.query(Player).all()
-        
-        if not players:
+        player_count = len(players)
+        db.close()
+
+        if player_count == 0:
             await interaction.followup.send("No players registered yet! Use `/register` to register your Beyond All Reason username.", ephemeral=True)
             return
-        
-        await interaction.followup.send(f"🔄 Refreshing stats for {len(players)} players... This may take a moment.", ephemeral=True)
-        db.close()
-        print(f"[Manual refresh by {interaction.user.name}] Updating stats for {len(players)} players in parallel...")
-        
-        # Prepare player data for parallel fetching
-        player_data_list = [
-            {
-                "discordId": p.discordId,
-                "barUsername": p.barUsername
-            }
-            for p in players
-        ]
-        
-        # Fetch all player stats in parallel
-        update_tasks = [update_single_player_stats(pd) for pd in player_data_list]
-        results = await asyncio.gather(*update_tasks, return_exceptions=True)
-        
-        # Update database with results
-        db = get_db()
-        updated_count = 0
-        for result in results:
-            if isinstance(result, dict) and result and result.get("success"):
-                player = db.query(Player).filter(Player.discordId == result["discordId"]).first()
-                if player:
-                    player.skill = result["skill"]
-                    player.skillUncertainty = result["skillUncertainty"]
-                    player.lastStatsUpdate = datetime.utcnow()
-                    db.add(player)
-                    updated_count += 1
-        
-        db.commit()
-        print(f"[Manual refresh complete] {updated_count}/{len(players)} players updated")
+
+        await interaction.followup.send(f"🔄 Refreshing stats for {player_count} players... This may take a moment.", ephemeral=True)
+        print(f"[Manual refresh by {interaction.user.name}] Updating stats for {player_count} players...")
+
+        # Call the reusable refresh function
+        result = await refresh_all_player_stats()
 
         # Send a follow-up message with results
-        await interaction.followup.send(f"✅ Stats refresh complete! Updated {updated_count}/{len(players)} players. Use `/leaderboard` to see the latest rankings.", ephemeral=True)
+        if result.get("error"):
+            await interaction.followup.send(f"❌ An error occurred during the refresh: {result['error']}", ephemeral=True)
+        else:
+            await interaction.followup.send(
+                f"✅ Stats refresh complete! Updated {result['updated']}/{result['total']} players. "
+                f"Use `/leaderboard` to see the latest rankings.",
+                ephemeral=True
+            )
 
     except Exception as e:
         print(f"Error during manual refresh: {e}")
         await interaction.followup.send(f"❌ An error occurred during the refresh: {str(e)}", ephemeral=True)
-    finally:
-        db.close()
 
 
 @tree.command(name="updateuser", description="Update a specific user's stats and display the leaderboard")
@@ -495,6 +569,175 @@ async def leaderboard(interaction: discord.Interaction):
         db.close()
 
 
+@tree.command(name="scheduleleaderboard", description="Schedule automatic leaderboard posting")
+@app_commands.describe(
+    channel="The channel where leaderboard will be posted",
+    hour="Hour in UTC (0-23)",
+    minute="Minute (0-59)"
+)
+async def schedule_leaderboard(interaction: discord.Interaction, channel: discord.TextChannel, hour: int, minute: int):
+    await interaction.response.defer(ephemeral=True)
+
+    # Validate inputs
+    if not (0 <= hour <= 23):
+        await interaction.followup.send("Hour must be between 0 and 23 (UTC)", ephemeral=True)
+        return
+    if not (0 <= minute <= 59):
+        await interaction.followup.send("Minute must be between 0 and 59", ephemeral=True)
+        return
+
+    db = get_db()
+    try:
+        config = save_scheduler_config(
+            db,
+            guild_id=interaction.guild_id,
+            channel_id=channel.id,
+            schedule_hour=hour,
+            schedule_minute=minute,
+            enabled=True
+        )
+
+        embed = discord.Embed(
+            color=0x00FF00,
+            title="✅ Leaderboard Schedule Configured",
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="Channel", value=channel.mention, inline=True)
+        embed.add_field(name="Time (UTC)", value=f"{hour:02d}:{minute:02d}", inline=True)
+        embed.add_field(name="Status", value="Enabled", inline=True)
+        embed.set_footer(text="The bot will automatically refresh stats and post the leaderboard at the scheduled time.")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Restart the scheduled task with new config
+        if not scheduled_leaderboard.is_running():
+            scheduled_leaderboard.start()
+
+    finally:
+        db.close()
+
+
+@tree.command(name="disableschedule", description="Disable automatic leaderboard posting")
+async def disable_schedule(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    db = get_db()
+    try:
+        config = get_scheduler_config(db, interaction.guild_id)
+        if not config:
+            await interaction.followup.send("No schedule configured for this server.", ephemeral=True)
+            return
+
+        save_scheduler_config(db, guild_id=interaction.guild_id, enabled=False)
+
+        embed = discord.Embed(
+            color=0xFF9900,
+            title="⏸️ Leaderboard Schedule Disabled",
+            description="Automatic leaderboard posting has been disabled.",
+            timestamp=discord.utils.utcnow()
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    finally:
+        db.close()
+
+
+@tree.command(name="schedulestatus", description="View the current leaderboard schedule")
+async def schedule_status(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    db = get_db()
+    try:
+        config = get_scheduler_config(db, interaction.guild_id)
+
+        if not config or not config.enabled:
+            embed = discord.Embed(
+                color=0x808080,
+                title="📅 Leaderboard Schedule Status",
+                description="No active schedule configured for this server.\n\nUse `/scheduleleaderboard` to set up automatic leaderboard posting.",
+                timestamp=discord.utils.utcnow()
+            )
+        else:
+            channel = bot.get_channel(config.channel_id)
+            channel_mention = channel.mention if channel else f"<#{config.channel_id}> (Channel not found)"
+
+            embed = discord.Embed(
+                color=0x00FF00,
+                title="📅 Leaderboard Schedule Status",
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(name="Status", value="✅ Enabled", inline=True)
+            embed.add_field(name="Channel", value=channel_mention, inline=True)
+            embed.add_field(name="Time (UTC)", value=f"{config.schedule_hour:02d}:{config.schedule_minute:02d}", inline=True)
+            embed.set_footer(text="Use /disableschedule to disable automatic posting")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    finally:
+        db.close()
+
+
+@tasks.loop(minutes=1)
+async def scheduled_leaderboard():
+    """Background task that checks if it's time to post the leaderboard"""
+    try:
+        now = datetime.utcnow()
+        current_hour = now.hour
+        current_minute = now.minute
+
+        db = get_db()
+        try:
+            # Get all enabled scheduler configs
+            configs = db.query(SchedulerConfig).filter(
+                SchedulerConfig.enabled == True,
+                SchedulerConfig.schedule_hour == current_hour,
+                SchedulerConfig.schedule_minute == current_minute
+            ).all()
+
+            for config in configs:
+                try:
+                    channel = bot.get_channel(config.channel_id)
+                    if not channel:
+                        print(f"Channel {config.channel_id} not found for guild {config.guild_id}")
+                        continue
+
+                    print(f"[{now.isoformat()}] Running scheduled leaderboard for guild {config.guild_id}")
+
+                    # Refresh all player stats using the reusable function
+                    refresh_result = await refresh_all_player_stats()
+                    print(f"[{now.isoformat()}] Refresh completed: {refresh_result['updated']}/{refresh_result['total']} players updated")
+
+                    # Reopen DB connection after async refresh
+                    db.close()
+                    db = get_db()
+
+                    # Get leaderboard data from the refreshed database
+                    leaderboard_list = get_leaderboard_data(db)
+
+                    if not leaderboard_list:
+                        await channel.send("No players registered yet! Use `/register` to register your Beyond All Reason username.")
+                        continue
+
+                    # Create and send leaderboard embed
+                    embed = create_leaderboard_embed(
+                        leaderboard_list,
+                        title="🏆 Daily Beyond All Reason Server Leaderboard",
+                        description="Large Team rankings - Top players from this Discord server (Auto-updated)"
+                    )
+                    await channel.send(embed=embed)
+
+                    print(f"[{now.isoformat()}] Successfully posted leaderboard to guild {config.guild_id}")
+
+                except Exception as e:
+                    print(f"Error posting leaderboard for guild {config.guild_id}: {e}")
+
+        finally:
+            db.close()
+
+    except Exception as e:
+        print(f"Error in scheduled_leaderboard task: {e}")
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -506,17 +749,18 @@ async def on_ready():
         #     tree.copy_global_to(guild=guild)
         #     await tree.sync(guild=guild)
         #     print(f"Application commands synced to guild {guild_id} (instant).")
-        
+
         # Global sync (takes up to 1 hour to propagate)
         await tree.sync()
         print("Application commands synced globally (may take up to 1 hour to appear).")
     except Exception as e:
         print("Failed to sync commands:", e)
-    
-    # Auto-refresh disabled - use /refresh command for manual updates
-    # Uncomment the lines below to enable automatic background updates
-    # bot.loop.create_task(update_all_player_stats())
-    print(f"Background stats update task started (runs every {STATS_UPDATE_INTERVAL // 60} minutes)")
+
+    # Start the scheduled leaderboard task
+    if not scheduled_leaderboard.is_running():
+        scheduled_leaderboard.start()
+        print("Scheduled leaderboard task started (checks every minute)")
+
     print("Automatic stats updates disabled. Use /refresh command to update player stats manually.")
 
 
