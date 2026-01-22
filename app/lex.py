@@ -473,6 +473,87 @@ async def updateuser(interaction: discord.Interaction, username: str):
         db.close()
 
 
+@tree.command(name="updateign", description="Update your registered Beyond All Reason username")
+@app_commands.describe(new_username="Your new Beyond All Reason in-game username")
+async def updateign(interaction: discord.Interaction, new_username: str):
+    await interaction.response.defer(ephemeral=True)
+
+    db = get_db()
+    try:
+        # Check if the user is registered - they can only update their own data
+        player = db.query(Player).filter(Player.discordId == interaction.user.id).first()
+        if not player:
+            await interaction.followup.send(f"❌ You are not registered. Use `/register` to register your username first.", ephemeral=True)
+            return
+
+        # Fetch stats for the new username to verify it exists and get skill
+        print(f"[Update IGN by {interaction.user.name}] Verifying new username {new_username}...")
+        result = await fetch_player_stats(new_username)
+
+        if not result.get("success"):
+            await interaction.followup.send(f"Failed to verify username: {result.get('error')}\n\nPlease try again later.", ephemeral=True)
+            return
+        
+        if not result.get("player"):
+             await interaction.followup.send(f'Could not find player "{new_username}" in the Beyond All Reason database. Please check the spelling and try again.', ephemeral=True)
+             return
+
+        new_player_data = result["player"]
+        old_username = player.barUsername
+        
+        # Update the player record
+        player.barUsername = new_username
+        player.skill = new_player_data.get("skill")
+        player.skillUncertainty = new_player_data.get("skillUncertainty")
+        player.lastStatsUpdate = datetime.utcnow()
+        
+        db.commit()
+        
+        embed = discord.Embed(color=0x00FF00, title="✅ Username Updated!", timestamp=discord.utils.utcnow())
+        embed.description = f"Your registered username has been changed from **{old_username}** to **{new_username}**."
+        
+        if player.skill is not None:
+            embed.add_field(name="Large Team Skill", value=f"{player.skill:.2f}", inline=True)
+            embed.add_field(name="Uncertainty", value=f"±{player.skillUncertainty:.2f}", inline=True)
+            
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"Error during updateign: {e}")
+        await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
+    finally:
+        db.close()
+
+
+@tree.command(name="deleteuser", description="Delete a user's data from the leaderboard")
+@app_commands.describe(username="The Beyond All Reason username to delete")
+async def deleteuser(interaction: discord.Interaction, username: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    db = get_db()
+    try:
+        # Case-insensitive search for the player
+        player = db.query(Player).filter(Player.barUsername.ilike(username)).first()
+        
+        if not player:
+             await interaction.followup.send(f"❌ Player '{username}' not found in the database.", ephemeral=True)
+             return
+             
+        deleted_username = player.barUsername
+        discord_username = player.discordUsername
+        
+        db.delete(player)
+        db.commit()
+        
+        await interaction.followup.send(f"✅ Successfully deleted data for **{deleted_username}** (Discord: {discord_username}).", ephemeral=True)
+        
+    except Exception as e:
+        print(f"Error during deleteuser: {e}")
+        await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
+    finally:
+        db.close()
+
+
 @tree.command(name="leaderboard", description="Display the server leaderboard for Beyond All Reason")
 async def leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
